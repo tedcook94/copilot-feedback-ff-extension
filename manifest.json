@@ -1,0 +1,30 @@
+{
+  "manifest_version": 2,
+  "name": "Copilot PR Comment Copier",
+  "version": "1.0.0",
+  "description": "Quickly copy GitHub Copilot review comments from pull requests as Markdown.",
+  "icons": {
+    "48": "icons/icon-48.png",
+    "96": "icons/icon-96.png"
+  },
+  "permissions": [
+    "clipboardWrite",
+    "activeTab"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "*://github.com/*/pull/*"
+      ],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "copilot-pr-comment-copier@firefox-extension",
+      "strict_min_version": "109.0"
+    }
+  }
+}
