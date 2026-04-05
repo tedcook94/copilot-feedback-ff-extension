@@ -134,7 +134,8 @@
    * deduplicated so that nested containers don't produce duplicates.
    * Excludes the top-level review summary comment.
    */
-  function findAllCopilotComments() {
+  function findAllCopilotComments(options) {
+    const unresolvedOnly = options && options.unresolvedOnly;
     // Strategy: find all comment *body* elements, walk up to the nearest
     // container, check if it's Copilot, deduplicate, and filter out summaries.
     //
@@ -175,6 +176,9 @@
       // Skip the summary/overview comment
       if (isSummaryComment(container)) continue;
 
+      // Optionally skip resolved comment threads
+      if (unresolvedOnly && isResolvedComment(container)) continue;
+
       results.push(container);
     }
 
@@ -204,6 +208,21 @@
       return true;
     }
 
+    return false;
+  }
+
+  /**
+   * Detects whether a comment lives inside a resolved thread.
+   * GitHub marks resolved threads with data-resolved="true" on the
+   * .js-resolvable-timeline-thread-container <details> element.
+   */
+  function isResolvedComment(container) {
+    const thread = container.closest(
+      "[data-resolved], .js-resolvable-timeline-thread-container"
+    );
+    if (thread && thread.getAttribute("data-resolved") === "true") {
+      return true;
+    }
     return false;
   }
 
@@ -673,7 +692,7 @@
    * Markdown string separated by horizontal rules.
    */
   function extractAllCommentsMarkdown() {
-    const comments = findAllCopilotComments();
+    const comments = findAllCopilotComments({ unresolvedOnly: true });
     const markdowns = [];
 
     for (const c of comments) {
@@ -804,7 +823,7 @@
   let copyAllButton = null;
 
   function updateCopyAllButton() {
-    const comments = findAllCopilotComments();
+    const comments = findAllCopilotComments({ unresolvedOnly: true });
     const count = comments.length;
 
     if (count === 0) {
