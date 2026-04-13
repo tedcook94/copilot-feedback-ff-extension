@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Copilot PR Comment Copier",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Quickly copy GitHub Copilot review comments from pull requests as Markdown.",
   "icons": {
     "48": "icons/icon-48.png",
