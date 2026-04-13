@@ -107,6 +107,12 @@
       }
     }
 
+    // Strategy 2b: New automated review comments use data-hovercard-type="copilot"
+    const copilotHovercards = container.querySelectorAll(
+      '[data-hovercard-type="copilot"]'
+    );
+    if (copilotHovercards.length > 0) return true;
+
     // Strategy 3: Text-based fallback — look for "copilot" in author name area
     // Scope this narrowly to avoid matching comment body text
     const headerSelectors = [
@@ -118,10 +124,46 @@
       const header = container.querySelector(sel);
       if (header) {
         const authorEls = header.querySelectorAll(
-          'a.author, a[data-testid="avatar-link"], .author'
+          'a.author, a[data-testid="avatar-link"], .author, ' +
+          'span[data-testid="avatar-name"]'
         );
         for (const a of authorEls) {
           if (/copilot/i.test(a.textContent)) return true;
+        }
+      }
+    }
+
+    // Strategy 4: Check react-partial embedded JSON for automated Copilot comments
+    const reactPartial = container.querySelector(
+      'react-partial[partial-name="automated-review-comment"]'
+    );
+    if (reactPartial) {
+      const script = reactPartial.querySelector(
+        'script[data-target="react-partial.embeddedData"]'
+      );
+      if (script) {
+        try {
+          const data = JSON.parse(script.textContent);
+          if (
+            data &&
+            data.props &&
+            data.props.comment &&
+            data.props.comment.automatedComment &&
+            data.props.comment.automatedComment.source === "copilot"
+          ) {
+            return true;
+          }
+          if (
+            data &&
+            data.props &&
+            data.props.comment &&
+            data.props.comment.author &&
+            /copilot/i.test(data.props.comment.author.login)
+          ) {
+            return true;
+          }
+        } catch (e) {
+          // JSON parse failed — fall through
         }
       }
     }
@@ -177,6 +219,36 @@
       if (isSummaryComment(container)) continue;
 
       // Optionally skip resolved comment threads
+      if (unresolvedOnly && isResolvedComment(container)) continue;
+
+      results.push(container);
+    }
+
+    // --- Alternate path for new automated-review-comment react-partials ---
+    // These don't contain .js-comment-body / .comment-body, so we must
+    // discover them separately via the react-partial element.
+    const automatedEls = document.querySelectorAll(
+      'react-partial[partial-name="automated-review-comment"]'
+    );
+    for (const partial of automatedEls) {
+      const container = partial.closest(
+        ".js-comment-container, .review-comment, .react-issue-comment, .TimelineItem"
+      );
+      if (!container) continue;
+      if (seen.has(container)) continue;
+      seen.add(container);
+
+      let dominated = false;
+      for (const existing of results) {
+        if (existing.contains(container) || container.contains(existing)) {
+          dominated = true;
+          break;
+        }
+      }
+      if (dominated) continue;
+
+      if (!isCopilotComment(container)) continue;
+      if (isSummaryComment(container)) continue;
       if (unresolvedOnly && isResolvedComment(container)) continue;
 
       results.push(container);
@@ -586,6 +658,7 @@
       if (!filePath) {
         const pathLink = root.querySelector(
           'a.Link--primary[href*="#diff-"], ' +
+          'a.Link--primary.text-mono, ' +
           '.file-header .file-info a, ' +
           '.file-header a[title]'
         );
@@ -666,7 +739,13 @@
       ".js-comment-body, .comment-body, .edit-comment-hide .markdown-body, .markdown-body"
     );
 
-    if (!body) return null;
+    // For new automated review comments, the body may not match any of the
+    // above selectors. Try the embedded JSON from the react-partial instead.
+    const hasAutomatedPartial = !!commentContainer.querySelector(
+      'react-partial[partial-name="automated-review-comment"]'
+    );
+
+    if (!body && !hasAutomatedPartial) return null;
 
     const { filePath, lineRange } = extractFileContext(commentContainer);
     let markdown = "";
@@ -681,10 +760,104 @@
       markdown += "\n\n";
     }
 
-    // Convert body HTML to markdown
-    markdown += htmlToMarkdown(body);
+    // If we found a DOM body element, convert it to markdown
+    if (body) {
+      markdown += htmlToMarkdown(body);
+    }
+
+    // For automated review comments, also try extracting from embedded JSON
+    // which contains the message text and structured suggestion data.
+    if (hasAutomatedPartial) {
+      const extracted = extractAutomatedCommentFromJSON(commentContainer);
+      if (extracted) {
+        // If we already got DOM body content, check if JSON adds suggestion
+        if (body && extracted.suggestion) {
+          markdown += "\n\n" + extracted.suggestion;
+        } else if (!body) {
+          // No DOM body found — use JSON content entirely
+          if (extracted.message) markdown += extracted.message;
+          if (extracted.suggestion) {
+            markdown += (extracted.message ? "\n\n" : "") + extracted.suggestion;
+          }
+        }
+      }
+    }
 
     return markdown || null;
+  }
+
+  /**
+   * Extracts comment text and suggestion diff from the embedded JSON data
+   * inside a react-partial[partial-name="automated-review-comment"] element.
+   * Returns { message, suggestion } or null.
+   */
+  function extractAutomatedCommentFromJSON(container) {
+    const partial = container.querySelector(
+      'react-partial[partial-name="automated-review-comment"]'
+    );
+    if (!partial) return null;
+
+    const script = partial.querySelector(
+      'script[data-target="react-partial.embeddedData"]'
+    );
+    if (!script) return null;
+
+    let data;
+    try {
+      data = JSON.parse(script.textContent);
+    } catch (e) {
+      return null;
+    }
+
+    const comment = data && data.props && data.props.comment;
+    if (!comment) return null;
+
+    let message = null;
+    let suggestion = null;
+
+    // Extract the comment message body (plain text from automatedComment)
+    if (comment.automatedComment && comment.automatedComment.message) {
+      message = comment.automatedComment.message;
+    } else if (comment.body) {
+      message = comment.body;
+    }
+
+    // Extract suggestion diff from structured data
+    if (
+      comment.automatedComment &&
+      comment.automatedComment.suggestion &&
+      comment.automatedComment.suggestion.diffEntries
+    ) {
+      const entries = comment.automatedComment.suggestion.diffEntries;
+      const diffBlocks = [];
+
+      for (const entry of entries) {
+        if (!entry.diffLines || entry.diffLines.length === 0) continue;
+
+        const deletionLines = [];
+        const additionLines = [];
+
+        for (const line of entry.diffLines) {
+          const text = line.text || "";
+          if (line.type === "DELETION") {
+            deletionLines.push(text);
+          } else if (line.type === "ADDITION") {
+            additionLines.push(text);
+          }
+          // CONTEXT and HUNK lines are skipped for the diff output
+        }
+
+        if (deletionLines.length > 0 || additionLines.length > 0) {
+          diffBlocks.push(formatSuggestionDiff(deletionLines, additionLines));
+        }
+      }
+
+      if (diffBlocks.length > 0) {
+        suggestion = diffBlocks.join("\n\n");
+      }
+    }
+
+    return (message || suggestion) ? { message, suggestion } : null;
   }
 
   /**
@@ -794,6 +967,7 @@
       [
         ".timeline-comment-actions",
         ".comment-header .timeline-comment-actions",
+        '[data-testid="comment-header-right-side-items"]',
         '[data-testid="comment-header"]',
         ".timeline-comment-header .timeline-comment-actions",
         ".timeline-comment-header",
